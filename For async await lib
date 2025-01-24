@@ -1,0 +1,102 @@
+public async Task Transmit(TcpClient client, Big_Alls data, NetworkStream stream)
+        {
+            //NetworkStream stream = client.GetStream();
+            byte[] message = To_Byte_arr(data); // Предположим, что этот метод реализован
+            
+            await stream.WriteAsync(message, 0, 512);
+
+        }
+
+        public async Task<Big_Alls> Receive(TcpClient client, NetworkStream stream) {
+            //NetworkStream stream = client.GetStream();
+            int size = Marshal.SizeOf(typeof(Big_Alls));
+            byte[] buffer = new byte[512];
+            int totalRead = 0;
+
+            
+            int read = await stream.ReadAsync(buffer, 0, 512);
+            if (read == 0)
+            {
+                throw new Exception("Соединение закрыто.");
+            }
+            totalRead += read;
+            
+
+            Big_Alls data = From_Byte_arr(buffer);
+            await Dispatcher.InvokeAsync(() => { BufferFirst.Content = data.ins_all.In_2; });
+            Console.WriteLine("Данные получены.");
+            return data;
+        }
+
+        private async Task ProcessDataQueueAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    List<Big_Alls> batch = new List<Big_Alls>();
+                    while (batch.Count < _batchSize && _dataQueue.TryDequeue(out var data))
+                    {
+                        batch.Add(data);
+                    }
+
+                    if (batch.Count > 0)
+                    {
+                        // Обновление UI пакетами
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            foreach (var item in batch)
+                            {
+                                Add_to_LB(item, InsList, MabList, PotList, EncList, OutList, StepList);
+                            }
+                        });
+                    }
+
+                    // Ожидание перед следующей проверкой
+                    await Task.Delay(_batchInterval, cancellationToken);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Задача была отменена
+            }
+            catch (Exception ex)
+            {
+                // Обработка других исключений
+                Dispatcher.Invoke(() =>
+                {
+                    MessageBox.Show($"Ошибка в ProcessDataQueueAsync: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
+                });
+            }
+        }
+
+        public async Task TcpAds(String AMS, int port, String targetIp, int tarport, CancellationToken cancellationToken, TcpClient client) {
+            
+            String var_name = "MAIN.Big_All_Data";
+            TcAdsClient plc = Connect_to_ADS(AMS, port);
+            
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                NetworkStream stream = client.GetStream();
+                Stopwatch sw = Stopwatch.StartNew();
+                data = await Task.Run(() => Read_package_ADS(plc, var_name), cancellationToken);
+
+                _ = Transmit(client, data, stream);
+                _dataQueue.Enqueue(data);
+
+                Big_Alls dataRec = await Receive(client, stream);
+                _dataQueue.Enqueue(dataRec);
+
+                int handle = plc.CreateVariableHandle("MAIN.Big_Out");
+                plc.WriteAny(handle, dataRec.outs_all);
+                sw.Stop();
+               
+
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    TimeLabel.Content = sw.Elapsed.TotalMilliseconds.ToString("F2") + " ms";
+                });
+            }
+            plc.Dispose();
+            client.Close();
+        }
